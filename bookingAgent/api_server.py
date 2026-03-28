@@ -120,6 +120,7 @@ AGENT_GRAPH = create_booking_graph(provider=_provider, model_name=_model_name)
 
 
 _notifications_lock = threading.Lock()
+STATUS_EVENT_WINDOW_HOURS = int(os.getenv("AGENT_STATUS_EVENT_WINDOW_HOURS", "24"))
 _notifications: list[dict[str, Any]] = [
     {
         "id": "1",
@@ -127,6 +128,7 @@ _notifications: list[dict[str, Any]] = [
         "title": "Booking Agent Ready",
         "message": "The booking backend is connected and ready.",
         "time": "just now",
+        "created_at": datetime.utcnow().isoformat(),
         "read": False,
     },
     {
@@ -135,6 +137,7 @@ _notifications: list[dict[str, Any]] = [
         "title": "Tip",
         "message": "Try: Book a meeting tomorrow from 10:00 to 10:30.",
         "time": "just now",
+        "created_at": datetime.utcnow().isoformat(),
         "read": False,
     },
 ]
@@ -223,19 +226,34 @@ def _build_stats(
 
 
 def _count_status_notifications() -> tuple[int, int]:
+    cutoff = datetime.utcnow() - timedelta(hours=STATUS_EVENT_WINDOW_HOURS)
+
+    def is_recent(item: dict[str, Any]) -> bool:
+        created_at = item.get("created_at")
+        if not created_at:
+            return False
+        try:
+            return datetime.fromisoformat(str(created_at)) >= cutoff
+        except ValueError:
+            return False
+
     with _notifications_lock:
         pending = len(
             [
                 n
                 for n in _notifications
-                if n.get("type") == "info" and n.get("title") == "Needs Clarification"
+                if n.get("type") == "info"
+                and n.get("title") == "Needs Clarification"
+                and is_recent(n)
             ]
         )
         conflicts = len(
             [
                 n
                 for n in _notifications
-                if n.get("type") == "warning" and n.get("title") == "Scheduling Conflict"
+                if n.get("type") == "warning"
+                and n.get("title") == "Scheduling Conflict"
+                and is_recent(n)
             ]
         )
     return pending, conflicts
@@ -256,6 +274,7 @@ def _push_notification(kind: str, title: str, message: str) -> None:
                 "title": title,
                 "message": message,
                 "time": "just now",
+                "created_at": datetime.utcnow().isoformat(),
                 "read": False,
             },
         )
