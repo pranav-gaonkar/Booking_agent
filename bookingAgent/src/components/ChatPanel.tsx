@@ -52,7 +52,7 @@ export const ChatPanel = () => {
   const hasCapturedSpeechRef = useRef(false);
   const finalTranscriptRef = useRef('');
   const shouldListenRef = useRef(false);
-  const voiceErrorShownRef = useRef(false);
+  const silenceTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -71,22 +71,31 @@ export const ChatPanel = () => {
     }
 
     const recognition = new Recognition();
-    recognition.continuous = true;
+    recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.lang = navigator.language || 'en-US';
+    recognition.lang = 'en-US';
     recognition.maxAlternatives = 1;
 
-    const startRecognition = () => {
-      try {
-        recognition.start();
-      } catch {
-        setIsListening(false);
-        shouldListenRef.current = false;
+    const clearSilenceTimer = () => {
+      if (silenceTimerRef.current !== null) {
+        window.clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
       }
+    };
+
+    const startSilenceTimer = () => {
+      clearSilenceTimer();
+      silenceTimerRef.current = window.setTimeout(() => {
+        if (!shouldListenRef.current || hasCapturedSpeechRef.current) {
+          return;
+        }
+        recognition.stop();
+      }, 10000);
     };
 
     recognition.onstart = () => {
       setIsListening(true);
+      startSilenceTimer();
     };
 
     recognition.onresult = (event) => {
@@ -111,6 +120,7 @@ export const ChatPanel = () => {
 
       if (hasSpeechInThisEvent || interimText.trim()) {
         hasCapturedSpeechRef.current = true;
+        clearSilenceTimer();
       }
 
       const nextInput = [dictationBaseRef.current, combined].filter(Boolean).join(' ').trim();
@@ -118,30 +128,25 @@ export const ChatPanel = () => {
     };
 
     recognition.onend = () => {
+      clearSilenceTimer();
       if (!shouldListenRef.current) {
         setIsListening(false);
-        if (!hasCapturedSpeechRef.current && !voiceErrorShownRef.current) {
-          voiceErrorShownRef.current = true;
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: (Date.now() + 2).toString(),
-              role: 'assistant',
-              content: 'I could not detect speech. Please verify the selected microphone in browser settings and try again.',
-              timestamp: new Date(),
-            },
-          ]);
-        }
         return;
       }
 
-      // Some browsers end the session quickly; restart silently while user keeps mic enabled.
-      setTimeout(() => {
-        if (!shouldListenRef.current) {
-          return;
-        }
-        startRecognition();
-      }, 180);
+      shouldListenRef.current = false;
+      setIsListening(false);
+      if (!hasCapturedSpeechRef.current) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (Date.now() + 2).toString(),
+            role: 'assistant',
+            content: 'I could not detect speech. Try speaking immediately after pressing mic, or use Windows dictation with Win + H.',
+            timestamp: new Date(),
+          },
+        ]);
+      }
     };
 
     recognition.onerror = (event) => {
@@ -152,34 +157,28 @@ export const ChatPanel = () => {
 
       const isRetryable = event.error === 'no-speech' || event.error === 'aborted' || !event.error;
       if (isRetryable) {
-        setTimeout(() => {
-          if (!shouldListenRef.current) {
-            return;
-          }
-          startRecognition();
-        }, 350);
+        setIsListening(false);
+        shouldListenRef.current = false;
         return;
       }
 
       shouldListenRef.current = false;
       setIsListening(false);
-      if (!voiceErrorShownRef.current) {
-        voiceErrorShownRef.current = true;
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: (Date.now() + 2).toString(),
-            role: 'assistant',
-            content: `Voice input error: ${event.error || 'unknown error'}. Please check browser microphone settings and try again.`,
-            timestamp: new Date(),
-          },
-        ]);
-      }
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 2).toString(),
+          role: 'assistant',
+          content: `Voice input error: ${event.error || 'unknown error'}. Browser speech service may be unavailable. Try Win + H or another browser.`,
+          timestamp: new Date(),
+        },
+      ]);
     };
 
     recognitionRef.current = recognition;
 
     return () => {
+      clearSilenceTimer();
       recognition.stop();
       recognitionRef.current = null;
     };
@@ -202,7 +201,6 @@ export const ChatPanel = () => {
       dictationBaseRef.current = input.trim();
       hasCapturedSpeechRef.current = false;
       finalTranscriptRef.current = '';
-      voiceErrorShownRef.current = false;
       shouldListenRef.current = true;
       recognition.start();
       setIsListening(true);
