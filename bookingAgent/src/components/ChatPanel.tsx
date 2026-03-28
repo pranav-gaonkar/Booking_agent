@@ -5,6 +5,29 @@ import ReactMarkdown from 'react-markdown';
 import { ChatMessage, initialMessages } from '@/lib/dummyData';
 import { sendAgentMessage } from '@/lib/agentApi';
 
+type SpeechRecognitionResultLike = {
+  isFinal: boolean;
+  0: { transcript: string };
+};
+
+type SpeechRecognitionEventLike = {
+  resultIndex: number;
+  results: SpeechRecognitionResultLike[];
+};
+
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
 const quickActions = [
   '📅 Book a meeting tomorrow at 3 PM',
   '📋 Show my schedule',
@@ -16,14 +39,90 @@ export const ChatPanel = () => {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [isMicSupported, setIsMicSupported] = useState(true);
   const [feedbacks, setFeedbacks] = useState<Record<string, 'up' | 'down'>>({});
   const [copied, setCopied] = useState<string | null>(null);
   const [threadId, setThreadId] = useState<string | undefined>(undefined);
   const endRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    const speechWindow = window as Window & {
+      SpeechRecognition?: SpeechRecognitionCtor;
+      webkitSpeechRecognition?: SpeechRecognitionCtor;
+    };
+    const Recognition = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+
+    if (!Recognition) {
+      setIsMicSupported(false);
+      return;
+    }
+
+    const recognition = new Recognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event) => {
+      let finalText = '';
+      let interimText = '';
+
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const result = event.results[i];
+        const transcript = result?.[0]?.transcript ?? '';
+        if (result.isFinal) {
+          finalText += transcript;
+        } else {
+          interimText += transcript;
+        }
+      }
+
+      const combined = `${finalText}${interimText}`.trim();
+      if (combined) {
+        setInput(combined);
+      }
+    };
+
+    recognition.onerror = () => {
+      setIsListening(false);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognitionRef.current = recognition;
+
+    return () => {
+      recognition.stop();
+      recognitionRef.current = null;
+    };
+  }, []);
+
+  const toggleVoiceInput = () => {
+    const recognition = recognitionRef.current;
+    if (!recognition || !isMicSupported) {
+      return;
+    }
+
+    if (isListening) {
+      recognition.stop();
+      setIsListening(false);
+      return;
+    }
+
+    try {
+      recognition.start();
+      setIsListening(true);
+    } catch {
+      setIsListening(false);
+    }
+  };
 
   const send = async (text?: string) => {
     const message = text || input;
@@ -181,10 +280,12 @@ export const ChatPanel = () => {
           </motion.button>
           <motion.button
             whileTap={{ scale: 0.85 }}
+            onClick={toggleVoiceInput}
+            disabled={!isMicSupported}
             className="glass-button rounded-full p-2.5 text-muted-foreground hover:text-accent"
-            title="Voice input (coming soon)"
+            title={isMicSupported ? (isListening ? 'Stop voice input' : 'Start voice input') : 'Voice input not supported in this browser'}
           >
-            <Mic className="h-4 w-4" />
+            <Mic className={`h-4 w-4 ${isListening ? 'text-primary' : ''}`} />
           </motion.button>
         </div>
       </div>
