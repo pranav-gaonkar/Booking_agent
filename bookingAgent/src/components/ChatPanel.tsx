@@ -50,6 +50,8 @@ export const ChatPanel = () => {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const dictationBaseRef = useRef('');
   const hasCapturedSpeechRef = useRef(false);
+  const shouldKeepListeningRef = useRef(false);
+  const noSpeechCyclesRef = useRef(0);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -101,23 +103,57 @@ export const ChatPanel = () => {
       setInput(nextInput);
     };
 
-    recognition.onerror = () => {
-      setIsListening(false);
+    recognition.onend = () => {
+      if (!shouldKeepListeningRef.current) {
+        setIsListening(false);
+        if (!hasCapturedSpeechRef.current && noSpeechCyclesRef.current >= 2) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: (Date.now() + 2).toString(),
+              role: 'assistant',
+              content: 'I could not detect speech. Please try again and speak clearly after the mic icon turns active.',
+              timestamp: new Date(),
+            },
+          ]);
+        }
+        noSpeechCyclesRef.current = 0;
+        return;
+      }
+
+      if (!hasCapturedSpeechRef.current) {
+        noSpeechCyclesRef.current += 1;
+      } else {
+        noSpeechCyclesRef.current = 0;
+      }
+
+      setTimeout(() => {
+        if (!shouldKeepListeningRef.current) {
+          return;
+        }
+        try {
+          recognition.start();
+        } catch {
+          setIsListening(false);
+        }
+      }, 200);
     };
 
-    recognition.onend = () => {
-      setIsListening(false);
-      if (!hasCapturedSpeechRef.current) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: (Date.now() + 2).toString(),
-            role: 'assistant',
-            content: 'I could not detect speech. Please try again and speak clearly after the mic icon turns active.',
-            timestamp: new Date(),
-          },
-        ]);
+    recognition.onerror = () => {
+      if (!shouldKeepListeningRef.current) {
+        setIsListening(false);
+        return;
       }
+      setTimeout(() => {
+        if (!shouldKeepListeningRef.current) {
+          return;
+        }
+        try {
+          recognition.start();
+        } catch {
+          setIsListening(false);
+        }
+      }, 300);
     };
 
     recognitionRef.current = recognition;
@@ -135,6 +171,7 @@ export const ChatPanel = () => {
     }
 
     if (isListening) {
+      shouldKeepListeningRef.current = false;
       recognition.stop();
       setIsListening(false);
       return;
@@ -143,9 +180,12 @@ export const ChatPanel = () => {
     try {
       dictationBaseRef.current = input.trim();
       hasCapturedSpeechRef.current = false;
+      noSpeechCyclesRef.current = 0;
+      shouldKeepListeningRef.current = true;
       recognition.start();
       setIsListening(true);
     } catch {
+      shouldKeepListeningRef.current = false;
       setIsListening(false);
     }
   };
@@ -314,6 +354,9 @@ export const ChatPanel = () => {
             <Mic className={`h-4 w-4 ${isListening ? 'text-primary' : ''}`} />
           </motion.button>
         </div>
+        {isListening && (
+          <p className="text-[11px] text-primary mt-2">Listening... tap mic again to stop.</p>
+        )}
       </div>
     </div>
   );
