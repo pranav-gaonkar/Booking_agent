@@ -3,32 +3,7 @@ import { Send, Bot, User, Sparkles, ThumbsUp, ThumbsDown, Mic, Copy, Check } fro
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import { ChatMessage, initialMessages } from '@/lib/dummyData';
-import { sendAgentMessage } from '@/lib/agentApi';
-
-type SpeechRecognitionResultLike = {
-  isFinal: boolean;
-  0: { transcript: string };
-};
-
-type SpeechRecognitionEventLike = {
-  resultIndex: number;
-  results: SpeechRecognitionResultLike[];
-};
-
-type SpeechRecognitionLike = {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  maxAlternatives?: number;
-  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: ((event: { error?: string }) => void) | null;
-  onend: (() => void) | null;
-  onstart: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-};
-
-type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+import { sendAgentMessage, transcribeAudio } from '@/lib/agentApi';
 
 const quickActions = [
   '📅 Book a meeting tomorrow at 3 PM',
@@ -47,166 +22,112 @@ export const ChatPanel = () => {
   const [copied, setCopied] = useState<string | null>(null);
   const [threadId, setThreadId] = useState<string | undefined>(undefined);
   const endRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const dictationBaseRef = useRef('');
-  const hasCapturedSpeechRef = useRef(false);
-  const finalTranscriptRef = useRef('');
-  const shouldListenRef = useRef(false);
-  const silenceTimerRef = useRef<number | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   useEffect(() => {
-    const speechWindow = window as Window & {
-      SpeechRecognition?: SpeechRecognitionCtor;
-      webkitSpeechRecognition?: SpeechRecognitionCtor;
-    };
-    const Recognition = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
-
-    if (!Recognition) {
+    if (!navigator.mediaDevices || typeof MediaRecorder === 'undefined') {
       setIsMicSupported(false);
       return;
     }
 
-    const recognition = new Recognition();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-    recognition.maxAlternatives = 1;
-
-    const clearSilenceTimer = () => {
-      if (silenceTimerRef.current !== null) {
-        window.clearTimeout(silenceTimerRef.current);
-        silenceTimerRef.current = null;
+    return () => {
+      mediaRecorderRef.current?.stop();
+      mediaRecorderRef.current = null;
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
       }
     };
+  }, []);
 
-    const startSilenceTimer = () => {
-      clearSilenceTimer();
-      silenceTimerRef.current = window.setTimeout(() => {
-        if (!shouldListenRef.current || hasCapturedSpeechRef.current) {
-          return;
-        }
-        recognition.stop();
-      }, 10000);
-    };
+  const toggleVoiceInput = async () => {
+    if (!isMicSupported) {
+      return;
+    }
 
-    recognition.onstart = () => {
-      setIsListening(true);
-      startSilenceTimer();
-    };
-
-    recognition.onresult = (event) => {
-      let hasSpeechInThisEvent = false;
-      let interimText = '';
-
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const result = event.results[i];
-        const transcript = result?.[0]?.transcript ?? '';
-        if (result.isFinal) {
-          hasSpeechInThisEvent = true;
-          finalTranscriptRef.current = `${finalTranscriptRef.current} ${transcript}`.trim();
-        } else {
-          interimText += transcript;
-        }
-      }
-
-      const combined = `${finalTranscriptRef.current} ${interimText}`.trim();
-      if (!combined) {
-        return;
-      }
-
-      if (hasSpeechInThisEvent || interimText.trim()) {
-        hasCapturedSpeechRef.current = true;
-        clearSilenceTimer();
-      }
-
-      const nextInput = [dictationBaseRef.current, combined].filter(Boolean).join(' ').trim();
-      setInput(nextInput);
-    };
-
-    recognition.onend = () => {
-      clearSilenceTimer();
-      if (!shouldListenRef.current) {
-        setIsListening(false);
-        return;
-      }
-
-      shouldListenRef.current = false;
+    if (isListening) {
+      mediaRecorderRef.current?.stop();
       setIsListening(false);
-      if (!hasCapturedSpeechRef.current) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: (Date.now() + 2).toString(),
-            role: 'assistant',
-            content: 'I could not detect speech. Try speaking immediately after pressing mic, or use Windows dictation with Win + H.',
-            timestamp: new Date(),
-          },
-        ]);
-      }
-    };
+      return;
+    }
 
-    recognition.onerror = (event) => {
-      if (!shouldListenRef.current) {
-        setIsListening(false);
-        return;
-      }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
 
-      const isRetryable = event.error === 'no-speech' || event.error === 'aborted' || !event.error;
-      if (isRetryable) {
-        setIsListening(false);
-        shouldListenRef.current = false;
-        return;
-      }
+      const preferredMimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'];
+      const selectedMimeType = preferredMimeTypes.find((m) => MediaRecorder.isTypeSupported(m));
+      const recorder = selectedMimeType
+        ? new MediaRecorder(stream, { mimeType: selectedMimeType })
+        : new MediaRecorder(stream);
 
-      shouldListenRef.current = false;
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        try {
+          const audioBlob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+          if (audioBlob.size < 1024) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: (Date.now() + 2).toString(),
+                role: 'assistant',
+                content: 'No audible voice captured. Please hold the mic button, speak for at least 1-2 seconds, then stop.',
+                timestamp: new Date(),
+              },
+            ]);
+            return;
+          }
+
+          const result = await transcribeAudio(audioBlob);
+          setInput((prev) => [prev.trim(), result.text.trim()].filter(Boolean).join(' '));
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : 'Transcription failed.';
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: (Date.now() + 2).toString(),
+              role: 'assistant',
+              content: `Voice transcription failed. ${msg}`,
+              timestamp: new Date(),
+            },
+          ]);
+        } finally {
+          setIsListening(false);
+          mediaRecorderRef.current = null;
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+            mediaStreamRef.current = null;
+          }
+          audioChunksRef.current = [];
+        }
+      };
+
+      mediaRecorderRef.current = recorder;
+      recorder.start(200);
+      setIsListening(true);
+    } catch {
       setIsListening(false);
       setMessages((prev) => [
         ...prev,
         {
           id: (Date.now() + 2).toString(),
           role: 'assistant',
-          content: `Voice input error: ${event.error || 'unknown error'}. Browser speech service may be unavailable. Try Win + H or another browser.`,
+          content: 'Microphone access failed. Please allow microphone permissions and try again.',
           timestamp: new Date(),
         },
       ]);
-    };
-
-    recognitionRef.current = recognition;
-
-    return () => {
-      clearSilenceTimer();
-      recognition.stop();
-      recognitionRef.current = null;
-    };
-  }, []);
-
-  const toggleVoiceInput = () => {
-    const recognition = recognitionRef.current;
-    if (!recognition || !isMicSupported) {
-      return;
-    }
-
-    if (isListening) {
-      shouldListenRef.current = false;
-      recognition.stop();
-      setIsListening(false);
-      return;
-    }
-
-    try {
-      dictationBaseRef.current = input.trim();
-      hasCapturedSpeechRef.current = false;
-      finalTranscriptRef.current = '';
-      shouldListenRef.current = true;
-      recognition.start();
-      setIsListening(true);
-    } catch {
-      shouldListenRef.current = false;
-      setIsListening(false);
     }
   };
 

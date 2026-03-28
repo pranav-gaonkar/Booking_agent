@@ -6,12 +6,14 @@ import csv
 import io
 import os
 import re
+import shutil
 import threading
+import tempfile
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
@@ -89,6 +91,10 @@ class ImportCsvResponse(BaseModel):
     errors: list[str]
 
 
+class TranscriptionResponse(BaseModel):
+    text: str
+
+
 app = FastAPI(title="Booking Agent API", version="1.0.0")
 
 allowed_origins = os.getenv(
@@ -117,6 +123,8 @@ _model_name = (
     else os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 )
 AGENT_GRAPH = create_booking_graph(provider=_provider, model_name=_model_name)
+WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
+_WHISPER_MODEL = None
 
 
 _notifications_lock = threading.Lock()
@@ -330,6 +338,57 @@ def _parse_start_datetime(date_text: str, time_text: str) -> datetime:
     return datetime.combine(parsed_date, parsed_time)
 
 
+def _get_whisper_model():
+    global _WHISPER_MODEL
+    if _WHISPER_MODEL is not None:
+        return _WHISPER_MODEL
+
+    try:
+        import whisper  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Server transcription is not available. Install dependencies with "
+                "'pip install -r requirements-booking-agent.txt'."
+            ),
+        ) from exc
+
+    try:
+        _WHISPER_MODEL = whisper.load_model(WHISPER_MODEL_NAME)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Failed to load Whisper model: {exc}") from exc
+
+    return _WHISPER_MODEL
+
+
+def _ensure_ffmpeg_available() -> None:
+    ffmpeg_in_path = shutil.which("ffmpeg")
+    if ffmpeg_in_path:
+        return
+
+    try:
+        import imageio_ffmpeg  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "FFmpeg is required for transcription but is not installed. "
+                "Install dependencies with 'pip install -r requirements-booking-agent.txt'."
+            ),
+        ) from exc
+
+    source_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg_dir = os.path.join(tempfile.gettempdir(), "booking-agent-ffmpeg")
+    os.makedirs(ffmpeg_dir, exist_ok=True)
+    target_ffmpeg = os.path.join(ffmpeg_dir, "ffmpeg.exe")
+
+    if not os.path.exists(target_ffmpeg):
+        shutil.copyfile(source_ffmpeg, target_ffmpeg)
+
+    os.environ["PATH"] = f"{ffmpeg_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
 def _upsert_booked_window(start_dt: datetime, end_dt: datetime, details: str) -> None:
     with get_connection() as conn:
         cursor = start_dt
@@ -441,6 +500,36 @@ def chat(payload: ChatRequest) -> ChatResponse:
         conflict_suggestions=conflict_suggestions,
         state={"current_intent": current_intent},
     )
+
+
+@app.post("/api/transcribe", response_model=TranscriptionResponse)
+async def transcribe_audio(audio: UploadFile = File(...)) -> TranscriptionResponse:
+    content = await audio.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="No audio payload provided")
+
+    _ensure_ffmpeg_available()
+    model = _get_whisper_model()
+
+    suffix = os.path.splitext(audio.filename or "voice.webm")[1] or ".webm"
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(content)
+            temp_path = tmp.name
+
+        result = model.transcribe(temp_path, fp16=False)
+        text = str(result.get("text", "")).strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="Speech could not be transcribed")
+        return TranscriptionResponse(text=text)
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}") from exc
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 @app.get("/api/bookings", response_model=list[BookingItem])

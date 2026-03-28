@@ -57,6 +57,10 @@ export interface AgentChatResponse {
   };
 }
 
+export interface TranscriptionResponse {
+  text: string;
+}
+
 const API_BASE_URL = import.meta.env.VITE_AGENT_API_URL ?? 'http://127.0.0.1:8000';
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -131,4 +135,16 @@ export async function importBookingsCsv(csvContent: string): Promise<ImportCsvRe
   });
 
   return parseResponse<ImportCsvResponse>(response);
+}
+
+export async function transcribeAudio(audioBlob: Blob): Promise<TranscriptionResponse> {
+  const formData = new FormData();
+  formData.append('audio', audioBlob, 'voice-input.webm');
+
+  const response = await fetch(`${API_BASE_URL}/api/transcribe`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  return parseResponse<TranscriptionResponse>(response);
 }
