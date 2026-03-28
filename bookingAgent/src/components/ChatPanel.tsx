@@ -50,8 +50,7 @@ export const ChatPanel = () => {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const dictationBaseRef = useRef('');
   const hasCapturedSpeechRef = useRef(false);
-  const shouldKeepListeningRef = useRef(false);
-  const noSpeechCyclesRef = useRef(0);
+  const finalTranscriptRef = useRef('');
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -77,26 +76,32 @@ export const ChatPanel = () => {
 
     recognition.onstart = () => {
       setIsListening(true);
+      hasCapturedSpeechRef.current = false;
+      finalTranscriptRef.current = '';
     };
 
     recognition.onresult = (event) => {
-      hasCapturedSpeechRef.current = true;
-      let finalText = '';
+      let hasSpeechInThisEvent = false;
       let interimText = '';
 
-      for (let i = 0; i < event.results.length; i += 1) {
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
         const result = event.results[i];
         const transcript = result?.[0]?.transcript ?? '';
         if (result.isFinal) {
-          finalText += transcript;
+          hasSpeechInThisEvent = true;
+          finalTranscriptRef.current = `${finalTranscriptRef.current} ${transcript}`.trim();
         } else {
           interimText += transcript;
         }
       }
 
-      const combined = `${finalText}${interimText}`.trim();
+      const combined = `${finalTranscriptRef.current} ${interimText}`.trim();
       if (!combined) {
         return;
+      }
+
+      if (hasSpeechInThisEvent || interimText.trim()) {
+        hasCapturedSpeechRef.current = true;
       }
 
       const nextInput = [dictationBaseRef.current, combined].filter(Boolean).join(' ').trim();
@@ -104,56 +109,22 @@ export const ChatPanel = () => {
     };
 
     recognition.onend = () => {
-      if (!shouldKeepListeningRef.current) {
-        setIsListening(false);
-        if (!hasCapturedSpeechRef.current && noSpeechCyclesRef.current >= 2) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: (Date.now() + 2).toString(),
-              role: 'assistant',
-              content: 'I could not detect speech. Please try again and speak clearly after the mic icon turns active.',
-              timestamp: new Date(),
-            },
-          ]);
-        }
-        noSpeechCyclesRef.current = 0;
-        return;
-      }
-
+      setIsListening(false);
       if (!hasCapturedSpeechRef.current) {
-        noSpeechCyclesRef.current += 1;
-      } else {
-        noSpeechCyclesRef.current = 0;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (Date.now() + 2).toString(),
+            role: 'assistant',
+            content: 'I could not detect speech. Please click mic and start speaking right away.',
+            timestamp: new Date(),
+          },
+        ]);
       }
-
-      setTimeout(() => {
-        if (!shouldKeepListeningRef.current) {
-          return;
-        }
-        try {
-          recognition.start();
-        } catch {
-          setIsListening(false);
-        }
-      }, 200);
     };
 
     recognition.onerror = () => {
-      if (!shouldKeepListeningRef.current) {
-        setIsListening(false);
-        return;
-      }
-      setTimeout(() => {
-        if (!shouldKeepListeningRef.current) {
-          return;
-        }
-        try {
-          recognition.start();
-        } catch {
-          setIsListening(false);
-        }
-      }, 300);
+      setIsListening(false);
     };
 
     recognitionRef.current = recognition;
@@ -171,7 +142,6 @@ export const ChatPanel = () => {
     }
 
     if (isListening) {
-      shouldKeepListeningRef.current = false;
       recognition.stop();
       setIsListening(false);
       return;
@@ -180,12 +150,10 @@ export const ChatPanel = () => {
     try {
       dictationBaseRef.current = input.trim();
       hasCapturedSpeechRef.current = false;
-      noSpeechCyclesRef.current = 0;
-      shouldKeepListeningRef.current = true;
+      finalTranscriptRef.current = '';
       recognition.start();
       setIsListening(true);
     } catch {
-      shouldKeepListeningRef.current = false;
       setIsListening(false);
     }
   };
