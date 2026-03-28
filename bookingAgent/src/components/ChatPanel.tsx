@@ -52,8 +52,7 @@ export const ChatPanel = () => {
   const hasCapturedSpeechRef = useRef(false);
   const finalTranscriptRef = useRef('');
   const shouldListenRef = useRef(false);
-  const retryCountRef = useRef(0);
-  const maxRetriesRef = useRef(4);
+  const voiceErrorShownRef = useRef(false);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -72,9 +71,9 @@ export const ChatPanel = () => {
     }
 
     const recognition = new Recognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = 'en-US';
+    recognition.lang = navigator.language || 'en-US';
     recognition.maxAlternatives = 1;
 
     const startRecognition = () => {
@@ -88,8 +87,6 @@ export const ChatPanel = () => {
 
     recognition.onstart = () => {
       setIsListening(true);
-      hasCapturedSpeechRef.current = false;
-      finalTranscriptRef.current = '';
     };
 
     recognition.onresult = (event) => {
@@ -123,13 +120,14 @@ export const ChatPanel = () => {
     recognition.onend = () => {
       if (!shouldListenRef.current) {
         setIsListening(false);
-        if (!hasCapturedSpeechRef.current) {
+        if (!hasCapturedSpeechRef.current && !voiceErrorShownRef.current) {
+          voiceErrorShownRef.current = true;
           setMessages((prev) => [
             ...prev,
             {
               id: (Date.now() + 2).toString(),
               role: 'assistant',
-              content: 'I could not detect speech. Please click mic and start speaking right away.',
+              content: 'I could not detect speech. Please verify the selected microphone in browser settings and try again.',
               timestamp: new Date(),
             },
           ]);
@@ -137,30 +135,13 @@ export const ChatPanel = () => {
         return;
       }
 
-      if (!hasCapturedSpeechRef.current && retryCountRef.current < maxRetriesRef.current) {
-        retryCountRef.current += 1;
-        setTimeout(() => {
-          if (!shouldListenRef.current) {
-            return;
-          }
-          startRecognition();
-        }, 350);
-        return;
-      }
-
-      shouldListenRef.current = false;
-      setIsListening(false);
-      if (!hasCapturedSpeechRef.current) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: (Date.now() + 2).toString(),
-            role: 'assistant',
-            content: 'I could not detect speech. Please check your active microphone and try again.',
-            timestamp: new Date(),
-          },
-        ]);
-      }
+      // Some browsers end the session quickly; restart silently while user keeps mic enabled.
+      setTimeout(() => {
+        if (!shouldListenRef.current) {
+          return;
+        }
+        startRecognition();
+      }, 180);
     };
 
     recognition.onerror = (event) => {
@@ -170,8 +151,7 @@ export const ChatPanel = () => {
       }
 
       const isRetryable = event.error === 'no-speech' || event.error === 'aborted' || !event.error;
-      if (isRetryable && retryCountRef.current < maxRetriesRef.current) {
-        retryCountRef.current += 1;
+      if (isRetryable) {
         setTimeout(() => {
           if (!shouldListenRef.current) {
             return;
@@ -183,6 +163,18 @@ export const ChatPanel = () => {
 
       shouldListenRef.current = false;
       setIsListening(false);
+      if (!voiceErrorShownRef.current) {
+        voiceErrorShownRef.current = true;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (Date.now() + 2).toString(),
+            role: 'assistant',
+            content: `Voice input error: ${event.error || 'unknown error'}. Please check browser microphone settings and try again.`,
+            timestamp: new Date(),
+          },
+        ]);
+      }
     };
 
     recognitionRef.current = recognition;
@@ -210,7 +202,7 @@ export const ChatPanel = () => {
       dictationBaseRef.current = input.trim();
       hasCapturedSpeechRef.current = false;
       finalTranscriptRef.current = '';
-      retryCountRef.current = 0;
+      voiceErrorShownRef.current = false;
       shouldListenRef.current = true;
       recognition.start();
       setIsListening(true);
