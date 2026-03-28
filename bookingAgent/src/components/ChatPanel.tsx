@@ -17,6 +17,7 @@ export const ChatPanel = () => {
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
   const [isMicSupported, setIsMicSupported] = useState(true);
   const [feedbacks, setFeedbacks] = useState<Record<string, 'up' | 'down'>>({});
   const [copied, setCopied] = useState<string | null>(null);
@@ -25,6 +26,14 @@ export const ChatPanel = () => {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimeoutRef = useRef<number | null>(null);
+
+  const clearRecordingTimeout = () => {
+    if (recordingTimeoutRef.current !== null) {
+      window.clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = null;
+    }
+  };
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -37,6 +46,7 @@ export const ChatPanel = () => {
     }
 
     return () => {
+      clearRecordingTimeout();
       mediaRecorderRef.current?.stop();
       mediaRecorderRef.current = null;
       if (mediaStreamRef.current) {
@@ -52,6 +62,7 @@ export const ChatPanel = () => {
     }
 
     if (isListening) {
+      clearRecordingTimeout();
       mediaRecorderRef.current?.stop();
       setIsListening(false);
       return;
@@ -82,15 +93,17 @@ export const ChatPanel = () => {
       };
 
       recorder.onstop = async () => {
+        clearRecordingTimeout();
+        setIsTranscribing(true);
         try {
           const audioBlob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
-          if (audioBlob.size < 1024) {
+          if (audioBlob.size < 300) {
             setMessages((prev) => [
               ...prev,
               {
                 id: (Date.now() + 2).toString(),
                 role: 'assistant',
-                content: 'No audible voice captured. Please hold the mic button, speak for at least 1-2 seconds, then stop.',
+                content: 'No audible voice captured. Please speak a little louder and a bit longer.',
                 timestamp: new Date(),
               },
             ]);
@@ -113,6 +126,7 @@ export const ChatPanel = () => {
           ]);
         } finally {
           setIsListening(false);
+          setIsTranscribing(false);
           mediaRecorderRef.current = null;
           if (mediaStreamRef.current) {
             mediaStreamRef.current.getTracks().forEach((track) => track.stop());
@@ -125,6 +139,12 @@ export const ChatPanel = () => {
       mediaRecorderRef.current = recorder;
       recorder.start(200);
       setIsListening(true);
+      recordingTimeoutRef.current = window.setTimeout(() => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.stop();
+          setIsListening(false);
+        }
+      }, 7000);
     } catch {
       setIsListening(false);
       setMessages((prev) => [
@@ -304,7 +324,10 @@ export const ChatPanel = () => {
           </motion.button>
         </div>
         {isListening && (
-          <p className="text-[11px] text-primary mt-2">Listening... tap mic again to stop.</p>
+          <p className="text-[11px] text-primary mt-2">Listening... it will auto-stop in a few seconds (or tap mic to stop now).</p>
+        )}
+        {isTranscribing && (
+          <p className="text-[11px] text-primary mt-2">Transcribing voice input...</p>
         )}
       </div>
     </div>
