@@ -21,7 +21,7 @@ type SpeechRecognitionLike = {
   lang: string;
   maxAlternatives?: number;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
   onend: (() => void) | null;
   onstart: (() => void) | null;
   start: () => void;
@@ -51,6 +51,9 @@ export const ChatPanel = () => {
   const dictationBaseRef = useRef('');
   const hasCapturedSpeechRef = useRef(false);
   const finalTranscriptRef = useRef('');
+  const shouldListenRef = useRef(false);
+  const retryCountRef = useRef(0);
+  const maxRetriesRef = useRef(4);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -69,10 +72,19 @@ export const ChatPanel = () => {
     }
 
     const recognition = new Recognition();
-    recognition.continuous = true;
+    recognition.continuous = false;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
     recognition.maxAlternatives = 1;
+
+    const startRecognition = () => {
+      try {
+        recognition.start();
+      } catch {
+        setIsListening(false);
+        shouldListenRef.current = false;
+      }
+    };
 
     recognition.onstart = () => {
       setIsListening(true);
@@ -109,6 +121,34 @@ export const ChatPanel = () => {
     };
 
     recognition.onend = () => {
+      if (!shouldListenRef.current) {
+        setIsListening(false);
+        if (!hasCapturedSpeechRef.current) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: (Date.now() + 2).toString(),
+              role: 'assistant',
+              content: 'I could not detect speech. Please click mic and start speaking right away.',
+              timestamp: new Date(),
+            },
+          ]);
+        }
+        return;
+      }
+
+      if (!hasCapturedSpeechRef.current && retryCountRef.current < maxRetriesRef.current) {
+        retryCountRef.current += 1;
+        setTimeout(() => {
+          if (!shouldListenRef.current) {
+            return;
+          }
+          startRecognition();
+        }, 350);
+        return;
+      }
+
+      shouldListenRef.current = false;
       setIsListening(false);
       if (!hasCapturedSpeechRef.current) {
         setMessages((prev) => [
@@ -116,14 +156,32 @@ export const ChatPanel = () => {
           {
             id: (Date.now() + 2).toString(),
             role: 'assistant',
-            content: 'I could not detect speech. Please click mic and start speaking right away.',
+            content: 'I could not detect speech. Please check your active microphone and try again.',
             timestamp: new Date(),
           },
         ]);
       }
     };
 
-    recognition.onerror = () => {
+    recognition.onerror = (event) => {
+      if (!shouldListenRef.current) {
+        setIsListening(false);
+        return;
+      }
+
+      const isRetryable = event.error === 'no-speech' || event.error === 'aborted' || !event.error;
+      if (isRetryable && retryCountRef.current < maxRetriesRef.current) {
+        retryCountRef.current += 1;
+        setTimeout(() => {
+          if (!shouldListenRef.current) {
+            return;
+          }
+          startRecognition();
+        }, 350);
+        return;
+      }
+
+      shouldListenRef.current = false;
       setIsListening(false);
     };
 
@@ -142,6 +200,7 @@ export const ChatPanel = () => {
     }
 
     if (isListening) {
+      shouldListenRef.current = false;
       recognition.stop();
       setIsListening(false);
       return;
@@ -151,9 +210,12 @@ export const ChatPanel = () => {
       dictationBaseRef.current = input.trim();
       hasCapturedSpeechRef.current = false;
       finalTranscriptRef.current = '';
+      retryCountRef.current = 0;
+      shouldListenRef.current = true;
       recognition.start();
       setIsListening(true);
     } catch {
+      shouldListenRef.current = false;
       setIsListening(false);
     }
   };
