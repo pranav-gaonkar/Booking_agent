@@ -205,16 +205,40 @@ def _fetch_bookings() -> list[BookingItem]:
     return bookings
 
 
-def _build_stats(bookings: list[BookingItem]) -> StatsResponse:
+def _build_stats(
+    bookings: list[BookingItem],
+    *,
+    pending_events: int = 0,
+    conflict_events: int = 0,
+) -> StatsResponse:
     confirmed = len([b for b in bookings if b.status == "confirmed"])
-    pending = len([b for b in bookings if b.status == "pending"])
-    conflicts = len([b for b in bookings if b.status == "conflict"])
+    pending = len([b for b in bookings if b.status == "pending"]) + pending_events
+    conflicts = len([b for b in bookings if b.status == "conflict"]) + conflict_events
     return StatsResponse(
         total_bookings=len(bookings),
         confirmed=confirmed,
         pending=pending,
         conflicts=conflicts,
     )
+
+
+def _count_status_notifications() -> tuple[int, int]:
+    with _notifications_lock:
+        pending = len(
+            [
+                n
+                for n in _notifications
+                if n.get("type") == "info" and n.get("title") == "Needs Clarification"
+            ]
+        )
+        conflicts = len(
+            [
+                n
+                for n in _notifications
+                if n.get("type") == "warning" and n.get("title") == "Scheduling Conflict"
+            ]
+        )
+    return pending, conflicts
 
 
 def _unread_count(items: list[dict[str, Any]]) -> int:
@@ -384,6 +408,12 @@ def chat(payload: ChatRequest) -> ChatResponse:
             "Scheduling Conflict",
             "Requested slot is unavailable. Alternatives are available.",
         )
+    elif booking_status == "needs_clarification":
+        _push_notification(
+            "info",
+            "Needs Clarification",
+            "Additional date/time details are needed to complete this request.",
+        )
 
     return ChatResponse(
         reply=reply,
@@ -402,13 +432,18 @@ def get_bookings() -> list[BookingItem]:
 @app.get("/api/stats", response_model=StatsResponse)
 def get_stats() -> StatsResponse:
     bookings = _fetch_bookings()
-    return _build_stats(bookings)
+    pending_events, conflict_events = _count_status_notifications()
+    return _build_stats(bookings, pending_events=pending_events, conflict_events=conflict_events)
 
 
 @app.get("/api/summary", response_model=SummaryResponse)
 def get_summary() -> SummaryResponse:
     bookings = _fetch_bookings()
-    return SummaryResponse(stats=_build_stats(bookings), bookings=bookings)
+    pending_events, conflict_events = _count_status_notifications()
+    return SummaryResponse(
+        stats=_build_stats(bookings, pending_events=pending_events, conflict_events=conflict_events),
+        bookings=bookings,
+    )
 
 
 @app.get("/api/notifications", response_model=NotificationListResponse)

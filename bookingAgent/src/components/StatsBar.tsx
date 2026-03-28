@@ -58,7 +58,7 @@ export const StatsBar = () => {
     return () => window.removeEventListener('booking-data-updated', handler);
   }, []);
 
-  const denominator = Math.max(1, counts.total);
+  const denominator = Math.max(1, counts.total, counts.confirmed + counts.pending + counts.conflicts);
   const stats = useMemo(
     () => [
       {
