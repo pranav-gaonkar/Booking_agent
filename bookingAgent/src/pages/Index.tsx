@@ -13,6 +13,11 @@ import { motion } from 'framer-motion';
 import { CommandPalette } from '@/components/CommandPalette';
 
 const Index = () => {
+  const currentMonthLabel = new Intl.DateTimeFormat('en-US', {
+    month: 'long',
+    year: 'numeric',
+  }).format(new Date());
+
   const [notifOpen, setNotifOpen] = useState(false);
   const [prefsOpen, setPrefsOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -75,7 +80,7 @@ const Index = () => {
                 title="Open calendar"
               >
                 <Calendar className="h-4 w-4" />
-                <span>March 2026</span>
+                <span>{currentMonthLabel}</span>
               </button>
               {calendarOpen && (
                 <div
