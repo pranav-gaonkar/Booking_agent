@@ -19,9 +19,11 @@ type SpeechRecognitionLike = {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
+  maxAlternatives?: number;
   onresult: ((event: SpeechRecognitionEventLike) => void) | null;
   onerror: (() => void) | null;
   onend: (() => void) | null;
+  onstart: (() => void) | null;
   start: () => void;
   stop: () => void;
 };
@@ -46,6 +48,8 @@ export const ChatPanel = () => {
   const [threadId, setThreadId] = useState<string | undefined>(undefined);
   const endRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const dictationBaseRef = useRef('');
+  const hasCapturedSpeechRef = useRef(false);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -64,15 +68,21 @@ export const ChatPanel = () => {
     }
 
     const recognition = new Recognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+    };
 
     recognition.onresult = (event) => {
+      hasCapturedSpeechRef.current = true;
       let finalText = '';
       let interimText = '';
 
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+      for (let i = 0; i < event.results.length; i += 1) {
         const result = event.results[i];
         const transcript = result?.[0]?.transcript ?? '';
         if (result.isFinal) {
@@ -83,9 +93,12 @@ export const ChatPanel = () => {
       }
 
       const combined = `${finalText}${interimText}`.trim();
-      if (combined) {
-        setInput(combined);
+      if (!combined) {
+        return;
       }
+
+      const nextInput = [dictationBaseRef.current, combined].filter(Boolean).join(' ').trim();
+      setInput(nextInput);
     };
 
     recognition.onerror = () => {
@@ -94,6 +107,17 @@ export const ChatPanel = () => {
 
     recognition.onend = () => {
       setIsListening(false);
+      if (!hasCapturedSpeechRef.current) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (Date.now() + 2).toString(),
+            role: 'assistant',
+            content: 'I could not detect speech. Please try again and speak clearly after the mic icon turns active.',
+            timestamp: new Date(),
+          },
+        ]);
+      }
     };
 
     recognitionRef.current = recognition;
@@ -117,6 +141,8 @@ export const ChatPanel = () => {
     }
 
     try {
+      dictationBaseRef.current = input.trim();
+      hasCapturedSpeechRef.current = false;
       recognition.start();
       setIsListening(true);
     } catch {
