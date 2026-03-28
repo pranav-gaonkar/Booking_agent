@@ -137,9 +137,12 @@ export async function importBookingsCsv(csvContent: string): Promise<ImportCsvRe
   return parseResponse<ImportCsvResponse>(response);
 }
 
-export async function transcribeAudio(audioBlob: Blob): Promise<TranscriptionResponse> {
+export async function transcribeAudio(audioBlob: Blob, language?: string): Promise<TranscriptionResponse> {
   const formData = new FormData();
   formData.append('audio', audioBlob, 'voice-input.webm');
+  if (language) {
+    formData.append('language', language);
+  }
 
   const response = await fetch(`${API_BASE_URL}/api/transcribe`, {
     method: 'POST',

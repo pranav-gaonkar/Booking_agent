@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
@@ -123,7 +123,7 @@ _model_name = (
     else os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 )
 AGENT_GRAPH = create_booking_graph(provider=_provider, model_name=_model_name)
-WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
+WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL", "small")
 _WHISPER_MODEL = None
 
 
@@ -503,7 +503,10 @@ def chat(payload: ChatRequest) -> ChatResponse:
 
 
 @app.post("/api/transcribe", response_model=TranscriptionResponse)
-async def transcribe_audio(audio: UploadFile = File(...)) -> TranscriptionResponse:
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    language: str | None = Form(default=None),
+) -> TranscriptionResponse:
     content = await audio.read()
     if not content:
         raise HTTPException(status_code=400, detail="No audio payload provided")
@@ -518,7 +521,25 @@ async def transcribe_audio(audio: UploadFile = File(...)) -> TranscriptionRespon
             tmp.write(content)
             temp_path = tmp.name
 
-        result = model.transcribe(temp_path, fp16=False)
+        normalized_language = (language or "").strip().lower()
+        whisper_language = normalized_language[:2] if len(normalized_language) >= 2 else None
+
+        transcribe_kwargs: dict[str, Any] = {
+            "fp16": False,
+            "task": "transcribe",
+            "temperature": 0,
+            "beam_size": 5,
+            "best_of": 5,
+            "condition_on_previous_text": False,
+            "initial_prompt": (
+                "Booking assistant conversation about meetings, dates, times, "
+                "rescheduling, calendar conflicts, and reminders."
+            ),
+        }
+        if whisper_language:
+            transcribe_kwargs["language"] = whisper_language
+
+        result = model.transcribe(temp_path, **transcribe_kwargs)
         text = str(result.get("text", "")).strip()
         if not text:
             raise HTTPException(status_code=422, detail="Speech could not be transcribed")
